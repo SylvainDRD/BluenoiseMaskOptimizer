@@ -1,0 +1,109 @@
+#version 430 core
+
+// Actual values set at compile time
+#define MASK_SIZE 1337
+#define DIMENSION 1337
+#define LAYERS_COUNT 1337
+
+layout (local_size_x = 32, local_size_y = 1) in;
+
+layout (rgba32f, binding=0) uniform image2DArray inMask;
+layout (rgba32f, binding=1) uniform image2DArray outMask;
+
+layout (std430, binding=0) buffer SwapData {
+    uint permutations[];
+};
+
+layout (binding=1) uniform atomic_uint swapCounter;
+
+uniform uint scramble;
+
+
+
+vec4[LAYERS_COUNT] fetchValue(ivec2 position) {
+    vec4 value[LAYERS_COUNT];
+
+    for(int i = 0; i < LAYERS_COUNT; ++i)
+        value[i] = imageLoad(inMask, ivec3(position, i));
+
+    return value;
+}
+
+void writeValue(ivec2 position, vec4 value[LAYERS_COUNT]) {
+    for(int i = 0; i < LAYERS_COUNT; ++i) 
+        imageStore(outMask, ivec3(position, i), value[i]);
+}
+
+// Compute the circular distance between p and q
+float circularSquaredDistance(ivec2 p, ivec2 q) {
+    ivec2 tmp = abs(p - q);
+    vec2 v = min(tmp, MASK_SIZE - tmp);
+
+    return dot(v, v);
+}
+
+// Compute the energy function for a give pair of pixels (i.e. the exponential)
+float energyExp(vec4 candidateValue[LAYERS_COUNT], ivec2 p, ivec2 q) {
+    const float sigma_i2 = 2.1f * 2.1f;
+    const float sigma_s2 = 1.0f;
+
+    float spatialTerm = - circularSquaredDistance(p, q) / sigma_i2;
+    
+    vec4 value[LAYERS_COUNT] = fetchValue(q);
+
+    float squaredL2 = 0.f;
+    for(int i = 0; i < LAYERS_COUNT; ++i) {
+        vec4 diff = candidateValue[i] - value[i];
+
+        squaredL2 += dot(diff, diff);
+    }
+
+    float valueTerm = - pow(squaredL2, DIMENSION * 0.25f) / sigma_s2;
+
+    return exp(spatialTerm + valueTerm);
+}
+
+// Compute the energy around center with value as the center value
+float energy(ivec2 center, vec4 value[LAYERS_COUNT]) {
+    const int radius = 5;
+
+    float e = 0.f;
+    for(int i = center.x - radius + 1; i < center.x + radius; ++i) { 
+        for(int j = center.y - radius + 1; j < center.y + radius; ++j) {
+            if(i != center.x || j != center.y) {
+                // Compute the position modulo the size of the mask
+                ivec2 position = (ivec2(i, j) + MASK_SIZE) & (MASK_SIZE - 1);
+
+                e += energyExp(value, center, position);
+            }
+        }
+    }
+
+    return e;
+}
+
+
+void main() {
+    uint index = gl_GlobalInvocationID.x * 2;
+    
+    uint i1 = permutations[index] ^ scramble;
+    uint i2 = permutations[index + 1] ^ scramble;
+
+    // Compute the 2D positions from the 1D vectorized indices
+    ivec2 position = ivec2(i1 % MASK_SIZE, i1 / MASK_SIZE);
+    ivec2 candidatePosition = ivec2(i2 % MASK_SIZE, i2 / MASK_SIZE);
+    
+    // Pre fetched to avoid multiple fetches of the same values
+    vec4 value[LAYERS_COUNT] = fetchValue(position);
+    vec4 candidateValue[LAYERS_COUNT] = fetchValue(candidatePosition);
+
+    float oldEnergy = energy(position, value) + energy(candidatePosition, candidateValue);
+    float newEnergy = energy(position, candidateValue) + energy(candidatePosition, value);
+
+    if(newEnergy < oldEnergy) {
+        atomicCounterIncrement(swapCounter);
+
+        writeValue(position, candidateValue);
+        writeValue(candidatePosition, value);
+    }
+}
