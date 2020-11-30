@@ -16,10 +16,10 @@ layout (std430, binding=0) buffer SwapData {
 
 layout (binding=1) uniform atomic_uint swapCounter;
 
-uniform uint scramble;
+uniform ivec2 scramble;
 
 
-
+// Fetch all the values at position from every layers
 vec4[LAYERS_COUNT] fetchValue(ivec2 position) {
     vec4 value[LAYERS_COUNT];
 
@@ -29,12 +29,13 @@ vec4[LAYERS_COUNT] fetchValue(ivec2 position) {
     return value;
 }
 
+// Write all the values at position to the right layer
 void writeValue(ivec2 position, vec4 value[LAYERS_COUNT]) {
     for(int i = 0; i < LAYERS_COUNT; ++i) 
         imageStore(outMask, ivec3(position, i), value[i]);
 }
 
-// Compute the circular distance between p and q
+// Compute the circular squared distance between p and q
 float circularSquaredDistance(ivec2 p, ivec2 q) {
     ivec2 tmp = abs(p - q);
     vec2 v = min(tmp, MASK_SIZE - tmp);
@@ -47,7 +48,7 @@ float energyExp(vec4 candidateValue[LAYERS_COUNT], ivec2 p, ivec2 q) {
     const float sigma_i2 = 2.1f * 2.1f;
     const float sigma_s2 = 1.0f;
 
-    float spatialTerm = - circularSquaredDistance(p, q) / sigma_i2;
+    float spatialDistance = circularSquaredDistance(p, q) / sigma_i2;
     
     vec4 value[LAYERS_COUNT] = fetchValue(q);
 
@@ -58,14 +59,14 @@ float energyExp(vec4 candidateValue[LAYERS_COUNT], ivec2 p, ivec2 q) {
         squaredL2 += dot(diff, diff);
     }
 
-    float valueTerm = - pow(squaredL2, DIMENSION * 0.25f) / sigma_s2;
+    float sampleDistance = pow(squaredL2, DIMENSION * 0.25f) / sigma_s2;
 
-    return exp(spatialTerm + valueTerm);
+    return exp(- spatialDistance - sampleDistance);
 }
 
 // Compute the energy around center with value as the center value
 float energy(ivec2 center, vec4 value[LAYERS_COUNT]) {
-    const int radius = 5;
+    const int radius = 7;
 
     float e = 0.f;
     for(int i = center.x - radius + 1; i < center.x + radius; ++i) { 
@@ -86,13 +87,13 @@ float energy(ivec2 center, vec4 value[LAYERS_COUNT]) {
 void main() {
     uint index = gl_GlobalInvocationID.x * 2;
     
-    uint i1 = permutations[index] ^ scramble;
-    uint i2 = permutations[index + 1] ^ scramble;
+    uint i1 = permutations[index];
+    uint i2 = permutations[index + 1];
 
     // Compute the 2D positions from the 1D vectorized indices
-    ivec2 position = ivec2(i1 % MASK_SIZE, i1 / MASK_SIZE);
-    ivec2 candidatePosition = ivec2(i2 % MASK_SIZE, i2 / MASK_SIZE);
-    
+    ivec2 position = ivec2(i1 % MASK_SIZE, i1 / MASK_SIZE) ^ scramble;
+    ivec2 candidatePosition = ivec2(i2 % MASK_SIZE, i2 / MASK_SIZE) ^ scramble;
+
     // Pre fetched to avoid multiple fetches of the same values
     vec4 value[LAYERS_COUNT] = fetchValue(position);
     vec4 candidateValue[LAYERS_COUNT] = fetchValue(candidatePosition);

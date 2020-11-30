@@ -20,7 +20,7 @@ public:
 
     /// \brief Query the number of permutations that was accepted in the last compute shader dispatch.
     /// \return The number of permutations that was accepted in the last dispatch.
-    int acceptedSwapCount() const;
+    uint32_t acceptedSwapCount() const;
 
     /// \brief Accessor for the mask OpenGL texture.
     /// \return The OpenGL texture ID of the mask.

@@ -20,7 +20,7 @@ It also uses [GLFW](https://github.com/glfw/glfw) to generate an OpenGL context 
 
 The application expects either none or two parameters. In the first case the optimization process starts for a 128 by 128 1D mask. In the second case you can provide a power of two for the size and the dimension as parameters (e.g. ```./BluenoiseMaskOptimizer 128 3``` for a 128 by 128 3D mask). The power of two for the mask size must be in [128, 1024]. Note that the size will be rounded up to the next power of two if it is not already one. As I previously said, the maximum dimension is 20.
 
-On launch, the optimization process starts automatically and the current state of the mask is updated every 100 ms or so in the GLFW window (obviously only the first 3 channels are displayed). As the permutations quickly get hard to visualize, the total number of permutations that were applied to the original whitenoise mask is constantly updated in the console.
+On launch, the optimization process starts automatically and the current state of the mask is updated every 100 ms or so in the GLFW window (obviously only the first 3 channels are displayed). As the permutations quickly get hard to visualize, the total number of permutations that were applied to the original whitenoise mask is constantly updated in the terminal.
 
 When the window is closed, the optimization stops and the last iteration of the mask is saved as a header and a PPM file at the root of the project (i.e. mask.h/mask.ppm).
 

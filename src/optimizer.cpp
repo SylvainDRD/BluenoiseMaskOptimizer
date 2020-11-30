@@ -34,8 +34,8 @@ void Optimizer::run() const {
     glUseProgram(m_program);
 
     // Set the scramble value for the random permutations
-    std::uniform_int_distribution<uint> distribution(0, m_maskSize * m_maskSize - 1);
-    glUniform1ui(glGetUniformLocation(m_program, "scramble"), distribution(m_generator));
+    std::uniform_int_distribution<uint> distribution(0, m_maskSize - 1);
+    glUniform2i(glGetUniformLocation(m_program, "scramble"), distribution(m_generator), distribution(m_generator));
 
     // Dispatch the compute shader and synchronize before updating the input texture
     glDispatchCompute(m_workGroupCount, 1, 1);
@@ -45,8 +45,8 @@ void Optimizer::run() const {
                        m_maskSize, m_maskSize, m_layers);
 }
 
-int Optimizer::acceptedSwapCount() const {
-    int swapCounter;
+uint32_t Optimizer::acceptedSwapCount() const {
+    uint32_t swapCounter;
 
     glBindBuffer(GL_ATOMIC_COUNTER_BUFFER, m_atomicCounter);
     GLuint *ptr = (GLuint *)glMapBufferRange(GL_ATOMIC_COUNTER_BUFFER, 0, sizeof(GLuint), GL_MAP_READ_BIT);
@@ -57,10 +57,10 @@ int Optimizer::acceptedSwapCount() const {
 }
 
 void Optimizer::exportMaskAsPPM(const char *filename) const {
-    GLfloat *mask = new GLfloat[4 * m_layers * m_maskSize * m_maskSize];
+    std::vector<GLfloat> mask(4 * m_layers * m_maskSize * m_maskSize);
 
     glBindTexture(GL_TEXTURE_2D_ARRAY, m_maskIn);
-    glGetTexImage(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, GL_FLOAT, mask);
+    glGetTexImage(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, GL_FLOAT, mask.data());
 
     std::ofstream file;
     file.open(filename, std::ios_base::binary);
@@ -83,16 +83,14 @@ void Optimizer::exportMaskAsPPM(const char *filename) const {
 
         file.write(reinterpret_cast<const char *>(&pixel), 3);
     }
-
-    delete[] mask;
 }
 
 void Optimizer::exportMaskAsHeader(const char *filename) const {
     const int pixelCount = m_maskSize * m_maskSize;
-    GLfloat *mask = new GLfloat[4 * m_layers * pixelCount];
+    std::vector<GLfloat> mask(4 * m_layers * pixelCount);
 
     glBindTexture(GL_TEXTURE_2D_ARRAY, m_maskIn);
-    glGetTexImage(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, GL_FLOAT, mask);
+    glGetTexImage(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, GL_FLOAT, mask.data());
 
     std::ofstream file;
     file.open(filename);
@@ -110,7 +108,7 @@ void Optimizer::exportMaskAsHeader(const char *filename) const {
                 int offset = d * pixelCount;
 
                 for(int k = 0; k < 4 && d + k < m_dimension; ++k) {
-                    file << mask[pixelIndex + offset + k] << 'f';
+                    file << std::setprecision(10) << mask[pixelIndex + offset + k];
 
                     if(d + k != m_dimension - 1)
                         file << ", ";
@@ -129,15 +127,13 @@ void Optimizer::exportMaskAsHeader(const char *filename) const {
         file << '\n';
     }
     file << "};\n";
-
-    delete[] mask;
 }
 
 void Optimizer::generatePermutationsSSBO() {
     const int pixelCount = m_maskSize * m_maskSize;
     const int permutationArraySize = pixelCount / SwapAttemptsDivisor;
 
-    GLuint *permutations = new GLuint[pixelCount];
+    std::vector<GLuint> permutations(pixelCount);
 
     for(int i = 0; i < pixelCount; ++i)
         permutations[i] = i;
@@ -150,13 +146,11 @@ void Optimizer::generatePermutationsSSBO() {
 
     glGenBuffers(1, &m_permutationsSSBO);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_permutationsSSBO);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(GLuint) * permutationArraySize, permutations, GL_STATIC_DRAW);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(GLuint) * permutationArraySize, permutations.data(), GL_STATIC_DRAW);
 
     GLuint blockID = glGetProgramResourceIndex(m_program, GL_SHADER_STORAGE_BLOCK, "SwapData");
     glShaderStorageBlockBinding(m_program, blockID, 0);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, m_permutationsSSBO);
-
-    delete[] permutations;
 }
 
 void Optimizer::generateAtomicCounter() {
@@ -177,29 +171,22 @@ void Optimizer::setupMaskTextures() {
     const int size = 4 * m_layers * pixelCount;
     const int lastLayerIndex = 4 * pixelCount * (m_layers - 1);
 
-    GLfloat *whitenoise = new GLfloat[size];
+    std::vector<GLfloat> whitenoise(size, 0.f);
 
     // Fill the m_layers - 1 first rgba textures in the array with noise
     for(int i = 0; i < lastLayerIndex; ++i)
         whitenoise[i] = distribution(m_generator);
 
-    // 1) Fill the 4 - paddingDimensions first dimensions of the last texture with noise
-    // 2) Fill the paddingDimensions last with zeros
-    for(int i = lastLayerIndex; i < 4 * pixelCount * m_layers; i += 4) {
+    // Fill the 4 - paddingDimensions first dimensions of the last texture with noise
+    for(int i = lastLayerIndex; i < 4 * pixelCount * m_layers; i += 4)
         for(int k = 0; k < 4 - paddingDimensions; ++k)
             whitenoise[i + k] = distribution(m_generator);
 
-        for(int k = 4 - paddingDimensions; k < 4; ++k)
-            whitenoise[i + k] = 0.f;
-    }
-
-    m_maskIn = generateMaskTexture(whitenoise);
+    m_maskIn = generateMaskTexture(whitenoise.data());
     glBindImageTexture(0, m_maskIn, 0, GL_TRUE, 0, GL_READ_ONLY, GL_RGBA32F);
 
-    m_maskOut = generateMaskTexture(whitenoise);
+    m_maskOut = generateMaskTexture(whitenoise.data());
     glBindImageTexture(1, m_maskOut, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA32F);
-
-    delete[] whitenoise;
 }
 
 GLuint Optimizer::generateMaskTexture(const void *data) {
