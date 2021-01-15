@@ -7,16 +7,16 @@
 
 layout (local_size_x = 32, local_size_y = 1) in;
 
-layout (rgba32f, binding=0) uniform image2DArray inMask;
-layout (rgba32f, binding=1) uniform image2DArray outMask;
+layout (rgba32f, binding = 0) uniform image2DArray inMask;
+layout (rgba32f, binding = 1) uniform image2DArray outMask;
 
-layout (std430, binding=0) buffer SwapData {
+layout (std430, binding = 0) buffer SwapData {
     uint permutations[];
 };
 
-layout (binding=1) uniform atomic_uint swapCounter;
+layout (binding = 1) uniform atomic_uint swapCounter;
 
-uniform ivec2 scramble;
+uniform ivec2 permutationScramble;
 
 
 // Fetch all the values at position from every layers
@@ -35,52 +35,49 @@ void writeValue(ivec2 position, vec4 value[LAYERS_COUNT]) {
         imageStore(outMask, ivec3(position, i), value[i]);
 }
 
-// Compute the circular squared distance between p and q
-float circularSquaredDistance(ivec2 p, ivec2 q) {
+// Compute the exponential of the circular squared distance between p and q
+float spatialFactor(ivec2 p, ivec2 q) {
+    const float sigma_i2 = 2.1f * 2.1f;
+
     ivec2 tmp = abs(p - q);
     vec2 v = min(tmp, MASK_SIZE - tmp);
 
-    return dot(v, v);
+    return exp(-dot(v, v) / sigma_i2);
 }
 
-// Compute the energy function for a give pair of pixels (i.e. the exponential)
-float energyExp(vec4 candidateValue[LAYERS_COUNT], ivec2 p, ivec2 q) {
-    const float sigma_i2 = 2.1f * 2.1f;
-    const float sigma_s2 = 1.0f;
+// Compute the energy function for a given pair of pixels
+float energyPixels(vec4 centerValue[LAYERS_COUNT], ivec2 center, ivec2 candidate) {
+    vec4 value[LAYERS_COUNT] = fetchValue(candidate);
 
-    float spatialDistance = circularSquaredDistance(p, q) / sigma_i2;
-    
-    vec4 value[LAYERS_COUNT] = fetchValue(q);
-
-    float squaredL2 = 0.f;
+    float l2 = 0.f;
     for(int i = 0; i < LAYERS_COUNT; ++i) {
-        vec4 diff = candidateValue[i] - value[i];
+        vec4 diff = centerValue[i] - value[i];
 
-        squaredL2 += dot(diff, diff);
+        l2 += dot(diff, diff);
     }
 
-    float sampleDistance = pow(squaredL2, DIMENSION * 0.25f) / sigma_s2;
+    l2 = sqrt(l2);
 
-    return exp(- spatialDistance - sampleDistance);
+    return spatialFactor(center, candidate) * l2;
 }
 
 // Compute the energy around center with value as the center value
 float energy(ivec2 center, vec4 value[LAYERS_COUNT]) {
-    const int radius = 7;
+    const int radius = 6;
 
-    float e = 0.f;
-    for(int i = center.x - radius + 1; i < center.x + radius; ++i) { 
-        for(int j = center.y - radius + 1; j < center.y + radius; ++j) {
+    float total = 0.f;
+    for(int i = center.x - radius; i <= center.x + radius; ++i) { 
+        for(int j = center.y - radius; j <= center.y + radius; ++j) {
             if(i != center.x || j != center.y) {
                 // Compute the position modulo the size of the mask
                 ivec2 position = (ivec2(i, j) + MASK_SIZE) & (MASK_SIZE - 1);
 
-                e += energyExp(value, center, position);
+                total += energyPixels(value, center, position);
             }
         }
     }
 
-    return e;
+    return total;
 }
 
 
@@ -90,9 +87,9 @@ void main() {
     uint i1 = permutations[index];
     uint i2 = permutations[index + 1];
 
-    // Compute the 2D positions from the 1D vectorized indices
-    ivec2 position = ivec2(i1 % MASK_SIZE, i1 / MASK_SIZE) ^ scramble;
-    ivec2 candidatePosition = ivec2(i2 % MASK_SIZE, i2 / MASK_SIZE) ^ scramble;
+    // Compute the 2D positions from the 1D vectorized indices and scramble them
+    ivec2 position = ivec2(i1 % MASK_SIZE, i1 / MASK_SIZE) ^ permutationScramble;
+    ivec2 candidatePosition = ivec2(i2 % MASK_SIZE, i2 / MASK_SIZE) ^ permutationScramble;
 
     // Pre fetched to avoid multiple fetches of the same values
     vec4 value[LAYERS_COUNT] = fetchValue(position);
@@ -101,7 +98,7 @@ void main() {
     float oldEnergy = energy(position, value) + energy(candidatePosition, candidateValue);
     float newEnergy = energy(position, candidateValue) + energy(candidatePosition, value);
 
-    if(newEnergy < oldEnergy) {
+    if(newEnergy > oldEnergy) {
         atomicCounterIncrement(swapCounter);
 
         writeValue(position, candidateValue);

@@ -35,7 +35,8 @@ void Optimizer::run() const {
 
     // Set the scramble value for the random permutations
     std::uniform_int_distribution<uint> distribution(0, m_maskSize - 1);
-    glUniform2i(glGetUniformLocation(m_program, "scramble"), distribution(m_generator), distribution(m_generator));
+    glUniform2i(glGetUniformLocation(m_program, "permutationScramble"), distribution(m_generator),
+                distribution(m_generator));
 
     // Dispatch the compute shader and synchronize before updating the input texture
     glDispatchCompute(m_workGroupCount, 1, 1);
@@ -173,11 +174,11 @@ void Optimizer::setupMaskTextures() {
 
     std::vector<GLfloat> whitenoise(size, 0.f);
 
-    // Fill the m_layers - 1 first rgba textures in the array with noise
+    // Fill the m_layers - 1 first rgba textures with white noise (i.e. uniform random values)
     for(int i = 0; i < lastLayerIndex; ++i)
         whitenoise[i] = distribution(m_generator);
 
-    // Fill the 4 - paddingDimensions first dimensions of the last texture with noise
+    // Then, fill only the 4 - paddingDimensions first dimensions of the last texture with white noise
     for(int i = lastLayerIndex; i < 4 * pixelCount * m_layers; i += 4)
         for(int k = 0; k < 4 - paddingDimensions; ++k)
             whitenoise[i + k] = distribution(m_generator);
